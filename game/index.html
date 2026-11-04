@@ -150,6 +150,30 @@ window.arenaClearLogs = function (keep) {
   return true;
 };
 </script>
+<div id="friend-door" hidden>
+  <div class="load">
+    <h1>Race a friend</h1>
+    <p>This opens in a new tab: a free page that links two phones. Your friend opens the same thing and types your code. Your career stays here, untouched.</p>
+    <p><a id="friend-door-go" target="_blank" rel="noopener">Open Race a Friend</a></p>
+    <p><button id="friend-door-back" type="button">Back</button></p>
+  </div>
+</div>
+<style>
+#friend-door { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; padding-inline: 16px; background: var(--floor); }
+#friend-door a, #friend-door button { display: inline-block; box-sizing: border-box; min-height: 48px; padding: 12px 18px; border-radius: 6px; border: 0; font: 700 17px var(--body); text-decoration: none; }
+#friend-door a { background: var(--accent); color: var(--floor); }
+#friend-door button { background: transparent; color: var(--ink); outline: 1px solid var(--dim); }
+</style>
+<script>
+// THE DOOR to RACE A FRIEND (scripts/friend/friend_link.gd): a real link: a Claude page may refuse a game opening a tab by itself.
+window.arenaFriendDoor = function (url) {
+  const door = document.getElementById("friend-door");
+  document.getElementById("friend-door-go").href = url;
+  door.hidden = false;
+};
+document.getElementById("friend-door-back").addEventListener("click", function () { document.getElementById("friend-door").hidden = true; });
+document.getElementById("friend-door-go").addEventListener("click", function () { document.getElementById("friend-door").hidden = true; });
+</script>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 // RACE A FRIEND: the page's side of the phone link (scripts/friend/friend_link.gd is the game's). Goes into the page only in
@@ -209,7 +233,7 @@ window.mesLink = (function () {
 </script>
 <script src="index.js"></script>
 <script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":3591484,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":3592396,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
 const engine = new Engine(GODOT_CONFIG);
 (function () {
   const status = document.getElementById('status');
