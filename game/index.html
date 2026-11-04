@@ -1,0 +1,236 @@
+<title>Main Event Speedway</title>
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<style>
+/* One full-screen game canvas over a dark arena floor; a loading card in the middle until the engine starts. */
+:root {
+  --floor: #14100c; --card: #241a12; --ink: #f3e6d2; --dim: #b49a7c;
+  --accent: #e8642a; --bad: #c0453a;
+  --display: "Arial Black", "Helvetica Neue", Arial, sans-serif;
+  --body: "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; padding: 0; }
+:root { padding: 0 !important; }
+body { background: var(--floor); color: var(--ink); overflow: hidden; touch-action: none; font-family: var(--body); }
+#canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; outline: none; touch-action: none; }
+#status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding-inline: 16px; background: var(--floor); }
+#status[hidden] { display: none !important; }
+.load { width: min(470px, 100%); display: grid; gap: 12px; background: var(--card); padding: 22px 22px 18px; border-radius: 10px; border-top: 4px solid var(--accent); }
+.load h1 { margin: 0; font-family: var(--display); font-size: 30px; letter-spacing: 0.04em; text-transform: uppercase; text-wrap: balance; }
+.tag { margin: 0; color: var(--accent); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 700; }
+.load p { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.45; }
+.bar { height: 8px; background: color-mix(in srgb, var(--ink) 12%, transparent); border-radius: 4px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0%; background: var(--accent); transition: width 0.2s; }
+.how { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; color: var(--ink); }
+.how b { color: var(--accent); font-weight: 700; letter-spacing: 0.05em; font-size: 12px; text-transform: uppercase; }
+#notice { color: var(--ink); background: color-mix(in srgb, var(--bad) 35%, var(--card)); border-radius: 6px; padding: 10px 12px; font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
+</style>
+
+<canvas id="canvas" tabindex="0">Your browser cannot show this game.</canvas>
+<div id="status">
+  <div class="load">
+    <h1>Main Event Speedway&trade;</h1>
+    <p id="step">Loading the arena (about 12&nbsp;MB)&hellip;</p>
+    <div class="bar"><i id="fill"></i></div>
+    <p>Arcade truck racing on the arena tracks. Win, spend the prize money on the
+       truck, go again.</p>
+    <p>Turn your sound on.</p>
+    <div class="how">
+      <b>Steer</b><span>Thumb down anywhere on the left and slide sideways to spin the wheel; rest it off to one side to keep turning (Settings &gt; STEER STYLE = PAD for the slide and the drift ring)</span>
+      <b>Flick up</b><span>The steering thumb: nitro in an arcade race</span>
+      <b>Gas</b><span>Touch on the right = full gas; slide left to ease off, far left = brake (held when stopped = reverse), down to reverse; lift = coast</span>
+      <b>Garage</b><span>Prize money buys grip, suspension, acceleration, speed and nitros (the nitro is for the arcade races)</span>
+    </div>
+    <p>Turn your phone sideways. Works on a computer with the arrow keys too.</p>
+    <div id="notice" hidden></div>
+  </div>
+</div>
+
+<script>
+// The engine and the game data are shipped gzipped and unpacked here, in the browser.
+(function () {
+  const realFetch = window.fetch.bind(window);
+  window.fetch = async function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    // The host only serves certain file types, so the engine and the game data travel gzipped under .wasm names.
+    const packed = /index\.wasm(\?|#|$)/.test(url) ? 'engine-gz.wasm' : (/index\.pck(\?|#|$)/.test(url) ? 'data-pck-gz.wasm' : '');
+    if (packed) {
+      const res = await realFetch(url.replace(/index\.(wasm|pck)/, packed), init);
+      if (!res.ok) return res;
+      const raw = new Uint8Array(await res.arrayBuffer());
+      let bytes = raw;
+      if (raw[0] === 0x1f && raw[1] === 0x8b) {
+        const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('gzip'));
+        bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      }
+      const type = packed === 'engine-gz.wasm' ? 'application/wasm' : 'application/octet-stream';
+      return new Response(bytes, { status: 200, headers: { 'Content-Type': type, 'Content-Length': String(bytes.length) } });
+    }
+    return realFetch(input, init);
+  };
+})();
+</script>
+<script>
+// C2: THE INPUT LOG HAND-OFF. The game (input_log.gd, PAUSE -> SAVE INPUT LOG) calls window.arenaSaveLog(text, name).
+// This page cannot download files directly, so the log goes into the page's own private database (read back by Claude),
+// split into pieces under 256 KB; if the database is not available here, the viewer is offered a normal save instead.
+// window.arenaSaveStatus tells the game how it went: "saving", "saved:<pieces>", "offered", or "failed:<reason>".
+window.arenaSaveStatus = "";
+window.arenaSaveLog = function (text, name) {
+  window.arenaSaveStatus = "saving";
+  (async function () {
+    try {
+      const safe = String(name).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
+      const db = window.claude ? await window.claude.use("db") : null;
+      if (db) {
+        const piece = 180000;
+        const parts = Math.max(1, Math.ceil(text.length / piece));
+        for (let i = 0; i < parts; i++) {
+          await db.collection("input_logs").doc(safe + "_" + String(i).padStart(3, "0")).set(
+            { log: safe, part: i, parts: parts, saved: Date.now(), text: text.slice(i * piece, (i + 1) * piece) });
+        }
+        await db.collection("input_log_index").doc(safe).set({ log: safe, parts: parts, saved: Date.now(), chars: text.length });
+        window.arenaSaveStatus = "saved:" + parts;
+        return;
+      }
+      const downloads = window.claude ? await window.claude.use("downloads") : null;
+      if (downloads) {
+        window.arenaSaveStatus = "offered";
+        await downloads.save({ filename: String(name), data: text });
+        window.arenaSaveStatus = "saved:file";
+        return;
+      }
+      window.arenaSaveStatus = "failed:unavailable";
+    } catch (err) {
+      window.arenaSaveStatus = "failed:" + ((err && (err.code || err.message)) || "error");
+    }
+  })();
+  return true;
+};
+// CLEAR OLD LOGS (the game's PAUSE -> CLEAR OLD LOGS, dev builds; the user, 2026-10-27: the database was full and the logs
+// stopped sending): every log but the newest `keep` (by when it was saved) is removed, its pieces and its index row.
+// window.arenaClearStatus tells the game: "clearing:<done>/<of>", "cleared:<removed>", or "failed:<reason>".
+window.arenaClearStatus = "";
+window.arenaClearLogs = function (keep) {
+  window.arenaClearStatus = "clearing:0/0";
+  (async function () {
+    try {
+      const db = window.claude ? await window.claude.use("db") : null;
+      if (!db) { window.arenaClearStatus = "failed:unavailable"; return; }
+      const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+      async function gone(ref) {
+        try { await ref.delete(); }
+        catch (err) {
+          if (err && err.code === "resource_exhausted") { await pause(1500); await ref.delete(); }
+          else throw err;
+        }
+      }
+      const snap = await db.collection("input_log_index").limit(1000).get();
+      const rows = snap.docs.map((d) => ({ id: d.id, data: d.data() || {} }));
+      rows.sort((a, b) => Number(b.data.saved || 0) - Number(a.data.saved || 0));
+      const old = rows.slice(Math.max(0, Number(keep) || 0));
+      let done = 0;
+      for (const row of old) {
+        const parts = Math.max(1, Number(row.data.parts) || 1);
+        for (let i = 0; i < parts; i++) {
+          await gone(db.collection("input_logs").doc(row.id + "_" + String(i).padStart(3, "0")));
+        }
+        await gone(db.collection("input_log_index").doc(row.id));
+        done += 1;
+        window.arenaClearStatus = "clearing:" + done + "/" + old.length;
+        await pause(60);
+      }
+      window.arenaClearStatus = "cleared:" + done;
+    } catch (err) {
+      window.arenaClearStatus = "failed:" + ((err && (err.code || err.message)) || "error");
+    }
+  })();
+  return true;
+};
+</script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+// RACE A FRIEND: the page's side of the phone link (scripts/friend/friend_link.gd is the game's). Goes into the page only in
+// a build made with FRIEND=1 (tools/webbuild.sh), which runs outside Claude: the Claude pages block WebRTC. PeerJS and its
+// free cloud service introduce the two phones with a 4-number code; after that they talk directly. Two channels: one
+// reliable (ready, go, finish), one not (where the truck is: the next one replaces a lost one).
+window.mesLink = (function () {
+  const PREFIX = "main-event-race-";
+  let peer = null, reliable = null, quick = null, inbox = [];
+  let st = { state: "idle", code: "", role: "", msg: "" };
+
+  function say(state, msg) { st.state = state; st.msg = msg || ""; }
+  function linkedIf() { if (reliable && reliable.open && quick && quick.open) say("linked"); }
+  function wire(c) {
+    if (c.label === "reliable") reliable = c; else quick = c;
+    c.on("open", linkedIf);
+    c.on("data", (d) => { if (typeof d === "string") inbox.push(d); });
+    c.on("close", () => { if (st.state === "linked") say("lost", "Your friend left."); });
+    c.on("error", () => { if (st.state === "linked") say("lost", "The link dropped."); });
+    if (c.open) linkedIf();
+  }
+  function start(attempt) {
+    if (typeof Peer === "undefined") { say("error", "The link service did not load. Check the internet and reload."); return; }
+    say("opening");
+    const code = String(Math.floor(1000 + Math.random() * 9000));
+    peer = new Peer(PREFIX + code);
+    peer.on("open", () => { st.code = code; if (st.state === "opening") say("code"); });
+    peer.on("connection", (c) => { st.role = "host"; wire(c); });
+    peer.on("disconnected", () => { /* the introducer went away: a link already made carries on */ });
+    peer.on("error", (e) => {
+      if (e.type === "unavailable-id" && attempt < 5) { peer.destroy(); start(attempt + 1); return; }
+      if (e.type === "peer-unavailable") { reliable = null; quick = null; st.role = ""; say("code", "No phone has that code."); return; }
+      if (st.state !== "linked") say("error", "The link service had a problem (" + e.type + ").");
+    });
+  }
+  return {
+    open() { if (!peer) start(0); },
+    join(code) {
+      if (!peer || !peer.open || st.state === "linked" || reliable) return;
+      st.role = "guest"; say("joining");
+      wire(peer.connect(PREFIX + code, { label: "reliable", reliable: true, serialization: "json" }));
+      wire(peer.connect(PREFIX + code, { label: "quick", reliable: false, serialization: "json" }));
+    },
+    close() {
+      try { if (peer) peer.destroy(); } catch (e) { /* already gone */ }
+      peer = null; reliable = null; quick = null; inbox = [];
+      st = { state: "idle", code: "", role: "", msg: "" };
+    },
+    status() { return JSON.stringify(st); },
+    send(text, sure) {
+      const c = sure ? reliable : quick;
+      try { if (c && c.open) c.send(text); } catch (e) { /* dropped: a lost truck position does not matter */ }
+    },
+    take() { const out = "[" + inbox.join(",") + "]"; inbox = []; return out; },
+  };
+})();
+</script>
+<script src="index.js"></script>
+<script>
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":3587580,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const engine = new Engine(GODOT_CONFIG);
+(function () {
+  const status = document.getElementById('status');
+  const fill = document.getElementById('fill');
+  const step = document.getElementById('step');
+  const notice = document.getElementById('notice');
+  function fail(err) {
+    console.error(err);
+    notice.textContent = 'The game could not start: ' + (err && err.message ? err.message : String(err)) + '. Try Chrome or Safari, and reload.';
+    notice.hidden = false;
+    step.textContent = 'Stopped.';
+  }
+  const missing = Engine.getMissingFeatures({ threads: false });
+  if (missing.length) { fail(new Error('this browser is missing ' + missing.join(', '))); return; }
+  engine.startGame({
+    onProgress: function (current, total) {
+      if (current > 0 && total > 0) {
+        fill.style.width = Math.min(100, (current / total) * 100).toFixed(1) + '%';
+        if (current >= total) step.textContent = 'Starting the engine…';
+      }
+    },
+  }).then(function () { status.hidden = true; }, fail);
+})();
+</script>
