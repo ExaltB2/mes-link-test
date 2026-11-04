@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Truck Link Test</title>
+<style>
+/* Two phones link up, each runs a truck round an oval, and the page measures how fast they see each other. */
+:root {
+  --floor: #14100c; --card: #241a12; --ink: #f3e6d2; --dim: #b49a7c; --line: #4a3726;
+  --you: #e8642a; --them: #4fb6c9; --good: #7cc46a; --bad: #e0705f;
+  --display: "Arial Black", "Helvetica Neue", Arial, sans-serif;
+  --body: "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; }
+body { background: var(--floor); color: var(--ink); font-family: var(--body); }
+main { min-height: 100%; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px;
+  padding-block: max(10px, env(safe-area-inset-top, 0px)) max(10px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+@media (max-width: 560px) { main { grid-template-columns: minmax(0, 1fr); } }
+canvas { display: block; width: 100%; aspect-ratio: 2 / 1; background: var(--card); border-radius: 8px; }
+.key { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0; font-size: 13px; color: var(--dim); }
+.key i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-right: 6px; }
+h1 { margin: 0; font-family: var(--display); font-size: 20px; letter-spacing: 0.03em; text-transform: uppercase; }
+#verdict { margin: 6px 0 8px; font-size: 15px; line-height: 1.35; }
+#verdict.good { color: var(--good); } #verdict.bad { color: var(--bad); }
+.link { display: grid; gap: 8px; margin: 0 0 10px; }
+.code { font: 900 34px var(--display); letter-spacing: 0.14em; color: var(--you); font-variant-numeric: tabular-nums; }
+.join { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input { font: 700 20px var(--body); width: 5.5em; min-height: 44px; box-sizing: border-box; padding: 6px 10px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
+button { font: 700 15px var(--body); color: var(--floor); background: var(--you); border: 0; border-radius: 6px; padding: 10px 14px; min-height: 44px; }
+button:disabled { background: var(--line); color: var(--dim); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.small { margin: 0; font-size: 13px; color: var(--dim); }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 10px; font-size: 14px; }
+dt { color: var(--dim); } dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section>
+    <canvas id="track" width="800" height="400" aria-label="An oval with your truck and the other phone's truck going round it"></canvas>
+    <p class="key"><span><i style="background:var(--you)"></i>This phone</span><span><i style="background:var(--them)"></i>The other phone</span></p>
+  </section>
+  <section>
+    <h1>Truck Link Test</h1>
+    <p id="verdict">Getting a code&hellip;</p>
+    <div class="link" id="linkbox">
+      <div><span class="small">Your code</span><br><span class="code" id="code">&ndash;</span></div>
+      <form class="join" id="joinform">
+        <label class="small" for="joincode">Got a code?</label>
+        <input id="joincode" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="0000">
+        <button type="submit" id="joinbtn">Join</button>
+      </form>
+    </div>
+    <dl>
+      <dt>Link</dt><dd id="state">starting</dd>
+      <dt>Route</dt><dd id="route">&ndash;</dd>
+      <dt>Ping (typical)</dt><dd id="ping">&ndash;</dd>
+      <dt>Ping (slow ones)</dt><dd id="slow">&ndash;</dd>
+      <dt>Updates a second</dt><dd id="rate">&ndash;</dd>
+      <dt>Longest gap</dt><dd id="gap">&ndash;</dd>
+    </dl>
+    <p class="small" id="note"></p>
+  </section>
+</main>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("track"), ctx = canvas.getContext("2d");
+  const SEND_MS = 50, LAP_S = 9, KEEP = 200, WINDOW_MS = 10000, PREFIX = "truck-link-test-";
+  const css = getComputedStyle(document.documentElement);
+  const col = (n) => css.getPropertyValue(n).trim();
+
+  let peer = null, conn = null, linked = false, failed = "";
+  let seq = 0, mine = Math.random() * Math.PI * 2;
+  const sentAt = new Map();
+  let otherAngle = null, shownAngle = null, otherSeq = -1, lastEcho = -1, lastHeard = 0, routeName = "–";
+  let rtts = [], arrivals = [], gaps = [];
+
+  function at(a, q) {
+    if (!a.length) return null;
+    const s = a.slice().sort((x, y) => x - y);
+    return s[Math.min(s.length - 1, Math.floor(s.length * q))];
+  }
+  function stats() {
+    const now = performance.now();
+    arrivals = arrivals.filter((t) => now - t < WINDOW_MS);
+    gaps = gaps.filter((g) => now - g.t < WINDOW_MS);
+    rtts = rtts.filter((r) => now - r.t < WINDOW_MS);
+    const ms = rtts.map((r) => r.ms);
+    return {
+      ping: at(ms, 0.5), slow: at(ms, 0.95),
+      rate: arrivals.length > 1 ? arrivals.length / ((now - arrivals[0]) / 1000 || 1) : 0,
+      gap: gaps.length ? Math.max.apply(null, gaps.map((g) => g.ms)) : null,
+      samples: ms.length,
+    };
+  }
+  function show() {
+    const s = stats(), fresh = linked && performance.now() - lastHeard < 1500;
+    $("state").textContent = failed ? "failed" : (!linked ? "waiting" : (fresh ? "linked" : "gone quiet"));
+    $("route").textContent = routeName;
+    $("ping").textContent = s.ping === null ? "–" : Math.round(s.ping) + " ms";
+    $("slow").textContent = s.slow === null ? "–" : Math.round(s.slow) + " ms";
+    $("rate").textContent = linked ? s.rate.toFixed(0) : "–";
+    $("gap").textContent = s.gap === null ? "–" : Math.round(s.gap) + " ms";
+    $("linkbox").hidden = linked;
+    const v = $("verdict");
+    v.className = "";
+    if (failed) { v.textContent = failed; v.className = "bad"; }
+    else if (!linked) v.textContent = peer && peer.open ? "Give the other phone your code, or type theirs." : "Getting a code…";
+    else if (s.samples < 10) v.textContent = "Linked. Measuring…";
+    else if (s.slow <= 300 && s.rate >= 12 && s.gap <= 700) { v.textContent = "Fast enough to show each other's trucks in a race."; v.className = "good"; }
+    else if (s.slow <= 600 && s.rate >= 6) v.textContent = "Usable, but the other truck will look a bit jumpy.";
+    else { v.textContent = "Too slow for racing right now."; v.className = "bad"; }
+  }
+
+  function pos(a) { return { x: 400 + 320 * Math.cos(a), y: 200 + 140 * Math.sin(a), h: Math.atan2(140 * Math.cos(a), -320 * Math.sin(a)) }; }
+  function truck(a, color) {
+    const p = pos(a);
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.h);
+    ctx.fillStyle = color; ctx.fillRect(-20, -11, 40, 22);
+    ctx.fillStyle = col("--floor"); ctx.fillRect(4, -8, 9, 16);
+    ctx.restore();
+  }
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    mine += (Math.PI * 2 / LAP_S) * dt;
+    ctx.clearRect(0, 0, 800, 400);
+    ctx.lineWidth = 46; ctx.strokeStyle = col("--line");
+    ctx.beginPath(); ctx.ellipse(400, 200, 320, 140, 0, 0, Math.PI * 2); ctx.stroke();
+    if (otherAngle !== null) {
+      if (shownAngle === null) shownAngle = otherAngle;
+      otherAngle += (Math.PI * 2 / LAP_S) * dt;
+      const d = Math.atan2(Math.sin(otherAngle - shownAngle), Math.cos(otherAngle - shownAngle));
+      shownAngle += d * Math.min(1, dt * 12);
+      truck(shownAngle, col("--them"));
+    }
+    truck(mine, col("--you"));
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  function wire(c) {
+    conn = c;
+    c.on("open", () => { linked = true; failed = ""; show(); readRoute(); });
+    c.on("data", (m) => {
+      if (!m || typeof m.s !== "number" || typeof m.a !== "number") return;
+      const now = performance.now();
+      if (m.s !== otherSeq) {
+        if (lastHeard && now - lastHeard < 5000) gaps.push({ t: now, ms: now - lastHeard });
+        lastHeard = now; otherSeq = m.s; otherAngle = m.a; arrivals.push(now);
+      }
+      if (typeof m.e === "number" && m.e !== lastEcho) {
+        lastEcho = m.e;
+        const t = sentAt.get(m.e);
+        if (t !== undefined) rtts.push({ t: now, ms: now - t });
+      }
+    });
+    c.on("close", () => { linked = false; otherAngle = null; shownAngle = null; routeName = "–"; show(); });
+    c.on("error", () => { failed = "The link dropped. Reload on both phones and try again."; show(); });
+  }
+
+  async function readRoute() {
+    if (!conn || !conn.peerConnection) return;
+    try {
+      const report = await conn.peerConnection.getStats();
+      let pair = null;
+      report.forEach((r) => { if (r.type === "candidate-pair" && r.state === "succeeded" && (r.nominated || r.selected)) pair = r; });
+      if (pair) {
+        const l = report.get(pair.localCandidateId), r = report.get(pair.remoteCandidateId);
+        const types = [l && l.candidateType, r && r.candidateType];
+        routeName = types.includes("relay") ? "through a relay" : (types.every((t) => t === "host") ? "same network" : "direct over internet");
+        show();
+      }
+    } catch (e) { /* the route name is only a label */ }
+    setTimeout(readRoute, 3000);
+  }
+
+  function code4() { return String(Math.floor(1000 + Math.random() * 9000)); }
+  function start(attempt) {
+    if (typeof Peer === "undefined") { failed = "The link service didn't load. Check this phone's internet and reload."; show(); return; }
+    const code = code4();
+    peer = new Peer(PREFIX + code);
+    peer.on("open", () => { $("code").textContent = code; show(); autoJoin(); });
+    peer.on("connection", (c) => { if (conn) { c.close(); return; } wire(c); });
+    peer.on("error", (e) => {
+      if (e.type === "unavailable-id" && attempt < 5) { peer.destroy(); start(attempt + 1); return; }
+      if (e.type === "peer-unavailable") { conn = null; failed = "No phone has that code. Check it and try again."; show(); setTimeout(() => { failed = ""; show(); }, 3000); return; }
+      failed = "The link service had a problem (" + e.type + "). Reload and try again."; show();
+    });
+  }
+  function join(code) {
+    if (!/^\d{4}$/.test(code)) { failed = "A code is 4 numbers."; show(); setTimeout(() => { failed = ""; show(); }, 2000); return; }
+    if (!peer || !peer.open || conn) return;
+    wire(peer.connect(PREFIX + code, { reliable: false, serialization: "json" }));
+  }
+  function autoJoin() {
+    const m = /[?&]join=(\d{4})/.exec(location.search);
+    if (m) join(m[1]);
+  }
+  $("joinform").addEventListener("submit", (e) => { e.preventDefault(); join($("joincode").value.trim()); });
+
+  setInterval(() => {
+    if (!linked || !conn || !conn.open) return;
+    seq += 1;
+    sentAt.set(seq, performance.now());
+    if (sentAt.size > KEEP) sentAt.delete(sentAt.keys().next().value);
+    try { conn.send({ s: seq, a: Math.round(mine * 1000) / 1000, e: otherSeq }); } catch (e) { /* dropped: the next one follows */ }
+  }, SEND_MS);
+  setInterval(show, 500);
+  $("note").textContent = "Keep this page on screen on both phones. Read the numbers out to Claude.";
+  try { if (navigator.wakeLock) navigator.wakeLock.request("screen").catch(() => {}); } catch (e) { /* the screen may sleep: fine */ }
+  start(0);
+  show();
+})();
+</script>
+</body>
+</html>
